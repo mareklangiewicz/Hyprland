@@ -89,6 +89,10 @@ jobs:
           key: ccache-arch-${{ github.run_id }}
           restore-keys: ccache-arch-
 
+      # only in this throwaway checkout: ccache can't cache --coverage, which is ~600 of ~730 compile calls
+      - name: Drop coverage instrumentation
+        run: sed -i '/--coverage/d' CMakeLists.txt
+
       - name: Build
         run: |
           cmake -Wno-dev -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DTESTS=true \
@@ -98,7 +102,7 @@ jobs:
 
       - name: ccache stats
         if: always()
-        run: ccache -s
+        run: ccache -sv
 
       # saved on failure too: a failed build still warms the cache for the next try
       - name: Save ccache
