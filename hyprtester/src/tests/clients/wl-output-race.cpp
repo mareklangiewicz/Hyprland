@@ -91,7 +91,13 @@ static int clientsSurviving(const std::string& commands) {
         clients.emplace_back(std::make_unique<CClient>());
     }
 
-    getFromSocket(std::format("[[BATCH]]{}", commands));
+    const auto REPLY = getFromSocket(std::format("[[BATCH]]{}", commands));
+
+    // without this the sequence silently does nothing, and every client survives for the wrong reason
+    if (REPLY.contains("not found")) {
+        NLog::log("{}The output never existed: {}", Colors::RED, REPLY);
+        throw std::exception();
+    }
 
     // clients need a moment to receive the globals, bind them and get their errors back
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -109,9 +115,15 @@ static int clientsSurviving(const std::string& commands) {
 
 // A client that saw a wl_output global and is still binding it must not be killed because the output
 // is already gone: the global has to outlive the removal, not just the resources already bound to it.
+//
+// This has to happen inside one batch. Given any time, Xwayland binds the output and never releases it,
+// which keeps the global alive and hides the bug.
 TEST_CASE(wlOutputRemovedWhileBinding) {
     const auto CREATE = std::format("output create headless {}", OUTPUT_NAME);
     const auto REMOVE = std::format("output remove {}", OUTPUT_NAME);
+
+    // test.lua disables outputs it has no rule for, and a disabled output can't be removed by name
+    OK(getFromSocket(std::format("/eval hl.monitor({{ output = '{}', mode = '1920x1080@60', position = 'auto', scale = 1 }})", OUTPUT_NAME)));
 
     try {
         // the first client to bind and release must not take the global away from the others
