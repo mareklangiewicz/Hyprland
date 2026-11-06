@@ -1,0 +1,67 @@
+# Fork-only, never upstream: the one workflow meant to run here, and only when dispatched by hand.
+# Upstream's workflows stay disabled on this fork, so no push, PR or issue starts anything.
+#   gh workflow run fork-ci.yml --repo mareklangiewicz/Hyprland --ref main -f ref=<branch> -f what=test
+name: Fork CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or commit to check
+        required: true
+        type: string
+      what:
+        description: Which checks to run
+        required: true
+        default: all
+        type: choice
+        options: [all, test, format]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: inputs.what != 'format'
+    name: hyprtester + gtests (Nix VM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: hyprwm/actions/nix-setup@main
+
+      - name: Run test VM
+        env:
+          REF: ${{ inputs.ref }}
+        run: nix build "github:${{ github.repository }}?ref=$REF#checks.x86_64-linux.tests" -L --extra-substituters "https://hyprland.cachix.org"
+
+      - name: Check exit status
+        run: |
+          grep 0 result/exit_status || echo "hyprtester failed"
+          grep 0 result/exit_status_gtests || echo "gtests failed"
+          [ 0 = $(cat result/exit_status) ] && [ 0 = $(cat result/exit_status_gtests) ]
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs
+          path: result
+
+  format:
+    if: inputs.what != 'test'
+    name: clang-format
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Install clang-format
+        run: |
+          pacman --noconfirm --noprogressbar -Syyu
+          pacman --noconfirm --noprogressbar -Sy clang
+
+      - name: clang-format check
+        run: .github/workflows/clang-format-check.sh "." "llvm" "^subprojects$" ""
