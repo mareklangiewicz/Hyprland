@@ -105,7 +105,7 @@ static void retireOutputGlobal(const std::string& name) {
     if (!old->isDefunct())
         old->remove();
 
-    if (old->inUse())
+    if (old->hasBoundResources() || old->inBindGrace())
         PROTO::defunctOutputs.emplace_back(old);
 }
 

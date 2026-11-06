@@ -127,7 +127,7 @@ void CWLOutputProtocol::destroyResource(CWLOutputResource* resource) {
 }
 
 void CWLOutputProtocol::destroyIfUnused() {
-    if (!m_defunct || inUse())
+    if (!m_defunct || hasBoundResources() || inBindGrace())
         return;
 
     // only erase the map entry if it is actually us: a new global with the same name may
@@ -139,8 +139,12 @@ void CWLOutputProtocol::destroyIfUnused() {
         std::erase_if(PROTO::defunctOutputs, [this](const auto& other) { return other.get() == this; });
 }
 
-bool CWLOutputProtocol::inUse() {
-    return !m_outputs.empty() || m_bindGraceTimer;
+bool CWLOutputProtocol::hasBoundResources() {
+    return !m_outputs.empty();
+}
+
+bool CWLOutputProtocol::inBindGrace() {
+    return !!m_bindGraceTimer;
 }
 
 std::vector<SP<CWLOutputResource>> CWLOutputProtocol::outputResourcesFrom(wl_client* client) {
@@ -162,6 +166,10 @@ void CWLOutputProtocol::remove() {
 
     m_defunct = true;
     removeGlobal();
+
+    // without an event loop no client request can arrive, so there is nothing to wait for
+    if (!g_pEventLoopManager)
+        return;
 
     m_bindGraceTimer = makeShared<CEventLoopTimer>(
         BIND_GRACE_PERIOD,

@@ -42,10 +42,11 @@ class CWLOutputProtocol : public IWaylandProtocol {
     PHLMONITORREF                      m_monitor;
     WP<CWLOutputProtocol>              m_self;
 
-    // will mark the protocol for removal, will be removed once inUse() turns false (or when overwritten by a new global)
+    // will mark the protocol for removal, will be removed when no. of bound outputs is 0 and the bind grace is over (or when overwritten by a new global)
     void remove();
-    bool isDefunct(); // true if above was called
-    bool inUse();     // true if a client holds a wl_output resource of ours, or may still be binding one
+    bool isDefunct();         // true if above was called
+    bool hasBoundResources(); // true if any client still holds a wl_output resource of ours
+    bool inBindGrace();       // true while a client that saw the global may still bind it
 
     struct {
         CSignalT<SP<CWLOutputResource>> outputBound;
@@ -59,7 +60,7 @@ class CWLOutputProtocol : public IWaylandProtocol {
     std::vector<SP<CWLOutputResource>> m_outputs;
     bool                               m_defunct = false;
     std::string                        m_name    = "";
-    SP<CEventLoopTimer>                m_bindGraceTimer; // set while late binds may still arrive
+    SP<CEventLoopTimer>                m_bindGraceTimer;
 
     struct {
         CHyprSignalListener modeChanged;
@@ -73,6 +74,7 @@ namespace PROTO {
     // defunct globals that are gone but not yet unref'd by all clients. Destroying their
     // still-bound resources server-side would fatally error the clients ("invalid object"
     // on their in-flight wl_output.release), and destroying the global would do the same to
-    // clients whose bind is in flight; they are kept here until inUse() turns false.
+    // clients whose bind is in flight; they are kept here until both are over, then drop out
+    // via destroyIfUnused.
     inline std::vector<SP<CWLOutputProtocol>> defunctOutputs;
 };
