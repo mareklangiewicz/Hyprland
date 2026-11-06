@@ -1,6 +1,10 @@
 # Fork-only, never upstream: the one workflow meant to run here, and only when dispatched by hand.
 # Upstream's workflows stay disabled on this fork, so no push, PR or issue starts anything.
-#   gh workflow run fork-ci.yml --repo mareklangiewicz/Hyprland --ref main -f ref=<branch> -f what=test
+#   gh workflow run fork-ci.yml --repo mareklangiewicz/Hyprland --ref main -f ref=<branch> -f what=quick
+#
+# what=quick  compile + unit tests + format, with ccache: the iteration loop.
+# what=test   hyprtester in the Nix VM, ~40 min: Nix rebuilds all of Hyprland on any source change, so
+#             caching cannot speed it up. Run it to prove a result, not on every change.
 name: Fork CI
 
 on:
@@ -13,16 +17,16 @@ on:
       what:
         description: Which checks to run
         required: true
-        default: all
+        default: quick
         type: choice
-        options: [all, test, format]
+        options: [quick, test, format, all]
 
 permissions:
   contents: read
 
 jobs:
   test:
-    if: inputs.what != 'format'
+    if: inputs.what == 'test' || inputs.what == 'all'
     name: hyprtester + gtests (Nix VM)
     runs-on: ubuntu-latest
     steps:
@@ -45,6 +49,67 @@ jobs:
         with:
           name: logs
           path: result
+
+  quick:
+    if: inputs.what == 'quick' || inputs.what == 'all'
+    name: build + gtests (ccache)
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux
+    env:
+      CCACHE_DIR: /github/home/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_MAXSIZE: 3G
+      # the compiler is reinstalled every run, and protocol headers are regenerated: hash content, not times
+      CCACHE_COMPILERCHECK: content
+      CCACHE_SLOPPINESS: include_file_mtime,include_file_ctime,time_macros
+    steps:
+      - name: Checkout repository actions
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: .github/actions
+
+      - name: Setup base
+        uses: ./.github/actions/setup_base
+
+      - name: Install ccache
+        run: pacman --noconfirm --noprogressbar -Sy ccache
+
+      # setup_base checks out the dispatched ref, which is main
+      - name: Checkout the ref to check
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+
+      - name: Restore ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: /github/home/.ccache
+          key: ccache-arch-${{ github.run_id }}
+          restore-keys: ccache-arch-
+
+      - name: Build
+        run: |
+          cmake -Wno-dev -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DTESTS=true \
+            -DCMAKE_DISABLE_PRECOMPILE_HEADERS=ON \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+          cmake --build build -j"$(nproc)"
+
+      - name: ccache stats
+        if: always()
+        run: ccache -s
+
+      # saved on failure too: a failed build still warms the cache for the next try
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: /github/home/.ccache
+          key: ccache-arch-${{ github.run_id }}
+
+      - name: Unit tests
+        run: ./build/hyprland_gtests
 
   format:
     if: inputs.what != 'test'
