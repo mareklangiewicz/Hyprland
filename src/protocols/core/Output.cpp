@@ -2,6 +2,11 @@
 #include "Compositor.hpp"
 #include "../../Compositor.hpp"
 #include "../../output/Monitor.hpp"
+#include "../../managers/eventLoop/EventLoopManager.hpp"
+
+// A client that saw a global before its removal may still bind it, and binding a destroyed global is a
+// fatal protocol error. There is no way to know when the last such bind has arrived, so wait.
+static constexpr auto BIND_GRACE_PERIOD = std::chrono::seconds(5);
 
 CWLOutputResource::CWLOutputResource(SP<CWlOutput> resource_, PHLMONITOR pMonitor, WP<CWLOutputProtocol> owner) : m_monitor(pMonitor), m_owner(owner), m_resource(resource_) {
     if UNLIKELY (!good())
@@ -118,19 +123,24 @@ void CWLOutputProtocol::bindManager(wl_client* client, void* data, uint32_t ver,
 void CWLOutputProtocol::destroyResource(CWLOutputResource* resource) {
     std::erase_if(m_outputs, [&](const auto& other) { return other.get() == resource; });
 
-    if (m_outputs.empty() && m_defunct) {
-        // only erase the map entry if it is actually us: a new global with the same name may
-        // have replaced us (monitor replug), in which case we live in defunctOutputs.
-        // NOTE: either erase drops the last ref to `this` — nothing may run after it.
-        if (PROTO::outputs.contains(m_name) && PROTO::outputs.at(m_name).get() == this)
-            PROTO::outputs.erase(m_name);
-        else
-            std::erase_if(PROTO::defunctOutputs, [this](const auto& other) { return other.get() == this; });
-    }
+    destroyIfUnused();
 }
 
-bool CWLOutputProtocol::hasBoundResources() {
-    return !m_outputs.empty();
+void CWLOutputProtocol::destroyIfUnused() {
+    if (!m_defunct || inUse())
+        return;
+
+    // only erase the map entry if it is actually us: a new global with the same name may
+    // have replaced us (monitor replug), in which case we live in defunctOutputs.
+    // NOTE: either erase drops the last ref to `this` — nothing may run after it.
+    if (PROTO::outputs.contains(m_name) && PROTO::outputs.at(m_name).get() == this)
+        PROTO::outputs.erase(m_name);
+    else
+        std::erase_if(PROTO::defunctOutputs, [this](const auto& other) { return other.get() == this; });
+}
+
+bool CWLOutputProtocol::inUse() {
+    return !m_outputs.empty() || m_bindGraceTimer;
 }
 
 std::vector<SP<CWLOutputResource>> CWLOutputProtocol::outputResourcesFrom(wl_client* client) {
@@ -152,6 +162,20 @@ void CWLOutputProtocol::remove() {
 
     m_defunct = true;
     removeGlobal();
+
+    m_bindGraceTimer = makeShared<CEventLoopTimer>(
+        BIND_GRACE_PERIOD,
+        [self = m_self](SP<CEventLoopTimer> timer, void*) {
+            g_pEventLoopManager->removeTimer(timer);
+
+            if (!self)
+                return;
+
+            self->m_bindGraceTimer.reset();
+            self->destroyIfUnused();
+        },
+        nullptr);
+    g_pEventLoopManager->addTimer(m_bindGraceTimer);
 }
 
 bool CWLOutputProtocol::isDefunct() {

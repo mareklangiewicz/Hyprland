@@ -93,7 +93,8 @@
 // It must NOT be destroyed while clients still hold resources bound to it: destroying
 // them server-side makes each client's in-flight wl_output.release an "invalid object"
 // protocol error, fatally disconnecting every bound client (mass client kill on a fast
-// monitor unplug/replug, e.g. a power blip on an external screen).
+// monitor unplug/replug, e.g. a power blip on an external screen). Nor right after its
+// removal, when clients may have a bind in flight: see BIND_GRACE_PERIOD.
 static void retireOutputGlobal(const std::string& name) {
     if (!PROTO::outputs.contains(name))
         return;
@@ -104,7 +105,7 @@ static void retireOutputGlobal(const std::string& name) {
     if (!old->isDefunct())
         old->remove();
 
-    if (old->hasBoundResources())
+    if (old->inUse())
         PROTO::defunctOutputs.emplace_back(old);
 }
 

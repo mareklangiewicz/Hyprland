@@ -5,6 +5,7 @@
 #include "../WaylandProtocol.hpp"
 #include "wayland.hpp"
 #include "../../helpers/signal/Signal.hpp"
+#include "../../managers/eventLoop/EventLoopTimer.hpp"
 
 class CWLOutputProtocol;
 
@@ -41,10 +42,10 @@ class CWLOutputProtocol : public IWaylandProtocol {
     PHLMONITORREF                      m_monitor;
     WP<CWLOutputProtocol>              m_self;
 
-    // will mark the protocol for removal, will be removed when no. of bound outputs is 0 (or when overwritten by a new global)
+    // will mark the protocol for removal, will be removed once inUse() turns false (or when overwritten by a new global)
     void remove();
-    bool isDefunct();         // true if above was called
-    bool hasBoundResources(); // true if any client still holds a wl_output resource of ours
+    bool isDefunct(); // true if above was called
+    bool inUse();     // true if a client holds a wl_output resource of ours, or may still be binding one
 
     struct {
         CSignalT<SP<CWLOutputResource>> outputBound;
@@ -52,11 +53,13 @@ class CWLOutputProtocol : public IWaylandProtocol {
 
   private:
     void destroyResource(CWLOutputResource* resource);
+    void destroyIfUnused();
 
     //
     std::vector<SP<CWLOutputResource>> m_outputs;
     bool                               m_defunct = false;
     std::string                        m_name    = "";
+    SP<CEventLoopTimer>                m_bindGraceTimer; // set while late binds may still arrive
 
     struct {
         CHyprSignalListener modeChanged;
@@ -69,7 +72,7 @@ namespace PROTO {
     inline std::unordered_map<std::string, SP<CWLOutputProtocol>> outputs;
     // defunct globals that are gone but not yet unref'd by all clients. Destroying their
     // still-bound resources server-side would fatally error the clients ("invalid object"
-    // on their in-flight wl_output.release); they are kept here until every client has
-    // released, then drop out via destroyResource.
+    // on their in-flight wl_output.release), and destroying the global would do the same to
+    // clients whose bind is in flight; they are kept here until inUse() turns false.
     inline std::vector<SP<CWLOutputProtocol>> defunctOutputs;
 };
